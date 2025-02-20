@@ -1,0 +1,9 @@
+{
+  "domain": "tasmota_update",
+  "name": "Tasmota Update",
+  "version": "1.0",
+  "documentation": "https://www.example.com",
+  "dependencies": ["mqtt"],
+  "codeowners": ["@your_github_username"],
+  "requirements": []
+}
