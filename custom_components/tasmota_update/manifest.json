@@ -5,6 +5,6 @@
   "documentation": "https://github.com/ahaghshenas/tasmota_update",
   "dependencies": ["mqtt"],
   "codeowners": ["ahaghshenas"],
-  "requirements": []
+  "requirements": [],
   "config_flow": true
 }
