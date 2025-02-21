@@ -91,4 +91,4 @@ Restart Home Assistant and check the logs for detailed information.
 ## Contributing
 Contributions are welcome! If you encounter any issues or have suggestions for improvement, please open an issue or submit a pull request on GitHub.
 ## License
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the GNU GENERAL PUBLIC License. See the LICENSE file for details.
