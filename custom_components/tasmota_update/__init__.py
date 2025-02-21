@@ -1,27 +1,19 @@
-"""Initialize the Tasmota Update component."""
 import logging
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.typing import ConfigType
-from homeassistant.helpers.discovery import async_load_platform
+from homeassistant.config_entries import ConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
-
 DOMAIN = "tasmota_update"
 
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Tasmota Update component."""
     _LOGGER.debug("Initializing Tasmota Update component")
+    return True
 
-    # Get the configuration for this component (if any)
-    conf = config.get(DOMAIN, {})
-    _LOGGER.debug(f"Configuration loaded: {conf}")
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Tasmota Update from a config entry."""
+    _LOGGER.debug("Setting up Tasmota Update from config entry")
 
-    # Pass an empty config to the platform setup
-    hass.async_create_task(
-        async_load_platform(
-            hass, "update", DOMAIN, {}, config
-        )
-    )
-
-    _LOGGER.debug("Tasmota Update component setup complete")
+    # Forward the setup to the update platform and await it
+    await hass.config_entries.async_forward_entry_setups(entry, ["update"])
     return True

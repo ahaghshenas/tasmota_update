@@ -3,6 +3,7 @@ import aiohttp
 import json
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
 from homeassistant.components.mqtt import async_publish, async_subscribe
+from homeassistant.helpers.entity import DeviceInfo
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -11,7 +12,8 @@ DOMAIN = "tasmota_update"
 # Track discovered devices to avoid duplicates
 _discovered_devices = set()
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+
+async def async_setup_entry(hass, entry, async_add_entities):
     """Set up the Tasmota Update platform using MQTT Discovery."""
     _LOGGER.debug("Setting up Tasmota Update platform with MQTT Discovery")
 
@@ -84,35 +86,69 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 class TasmotaUpdateEntity(UpdateEntity):
     """Representation of a Tasmota Update entity."""
 
+    # def __init__(self, hass, device_id, device_name, firmware_version, device_topic, full_topic):
+    #     """Initialize the entity."""
+    #     self.hass = hass  # Store the hass object 
+    #     self._device_id = device_id
+    #     self._device_name = device_name
+    #     self._firmware_version = firmware_version
+    #     self._device_topic = device_topic  # Store the device topic (extracted from "t")
+    #     self._full_topic = full_topic  # Store the full topic (extracted from "ft")
+    #     self._latest_version = None  # Internal attribute to store the latest version
+    #     self._attr_name = f"{device_name} Firmware"  # Adjusted friendly name
+    #     self._attr_unique_id = f"tasmota_update_{device_id}"
+    #     self._in_process = False  # Track if an update is in progress
+    #     self._target_version = None  # Track the target firmware version
+    
+    #     # Enable the "Install" button by setting supported features
+    #     self._attr_supported_features = UpdateEntityFeature.INSTALL
+    
+    #     # Debug log for entity initialization
+    #     _LOGGER.debug(f"Initializing entity: Name={self._attr_name}, Unique ID={self._attr_unique_id}")
+    
+    #     # Fetch the latest version on initialization
+    #     self.hass.async_create_task(self.async_update_latest_version())
+
     def __init__(self, hass, device_id, device_name, firmware_version, device_topic, full_topic):
         """Initialize the entity."""
-        self.hass = hass  # Store the hass object
+        self.hass = hass  # Store the hass object 
         self._device_id = device_id
         self._device_name = device_name
         self._firmware_version = firmware_version
         self._device_topic = device_topic  # Store the device topic (extracted from "t")
         self._full_topic = full_topic  # Store the full topic (extracted from "ft")
         self._latest_version = None  # Internal attribute to store the latest version
-        self._attr_name = f"Tasmota {device_name} Update"
+        self._attr_name = f"{device_name} Firmware"  # Friendly name
         self._attr_unique_id = f"tasmota_update_{device_id}"
         self._in_process = False  # Track if an update is in progress
         self._target_version = None  # Track the target firmware version
-
+    
         # Enable the "Install" button by setting supported features
         self._attr_supported_features = UpdateEntityFeature.INSTALL
-
+    
+        # Set the device class to "firmware"
+        self._attr_device_class = "firmware"
+    
         # Debug log for entity initialization
         _LOGGER.debug(f"Initializing entity: Name={self._attr_name}, Unique ID={self._attr_unique_id}")
-
+    
         # Fetch the latest version on initialization
         self.hass.async_create_task(self.async_update_latest_version())
+
+    @property
+    def device_info(self) -> dict:
+        """Return information about the device."""
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},  # Use a custom identifier for your integration
+            "connections": {("mac", self._device_id)}   # Use the MAC address for compatibility with Tasmota
+        }
 
     async def async_added_to_hass(self):
         """Run when entity is added to Home Assistant."""
         await super().async_added_to_hass()
-
-        # Explicitly set the entity ID
-        desired_entity_id = f"update.tasmota_{self._device_name.lower().replace(' ', '_')}_update"
+    
+        # Generate the new entity ID format
+        desired_entity_id = f"update.{self._device_name.lower().replace(' ', '_')}_firmware"
         _LOGGER.debug(f"Setting entity ID to: {desired_entity_id}")
         self.entity_id = desired_entity_id
 
@@ -182,7 +218,7 @@ class TasmotaUpdateEntity(UpdateEntity):
         """Fetch the latest firmware version and update the internal attribute."""
         self._latest_version = await self.async_get_latest_version()
         if self._latest_version:
-            _LOGGER.debug(f"Successfully fetched latest version: {self._latest_version}")
+            _LOGGER.debug(f"Successfully fetched latest version: {self._latest_version}") 
         else:
             _LOGGER.debug("Failed to fetch latest version, falling back to installed version")
         if self.hass:
