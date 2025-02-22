@@ -46,7 +46,7 @@ async def async_get_latest_version(hass):
     """Fetch the latest firmware version from GitHub."""
     url = "https://api.github.com/repos/arendst/Tasmota/releases/latest"
     try:
-        import aiohttp  # Ensure aiohttp is available
+        import aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status == 200:
