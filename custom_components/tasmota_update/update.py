@@ -29,74 +29,94 @@ async def async_setup_entry(hass, entry, async_add_entities):
             # Parse the JSON payload
             payload_dict = json.loads(payload)
             device_id = topic.split("/")[-2]  # Extract device ID from the topic
-            device_topic = payload_dict.get("t", device_id)  # Use "t" (topic) or fallback to device_id
-            lwt_topic = payload_dict.get("lw", f"tele/{device_topic}/LWT")  # Use "lw" (LWT topic) or fallback to default
 
             # Check if the device has already been processed
-            if device_id in _discovered_devices:
-                # If the device is already processed, update its firmware version
-                for entity in hass.data[DOMAIN]["entities"]:
-                    if entity._device_id == device_id:
-                        firmware_version = payload_dict.get("sw", "unknown")
-                        _LOGGER.debug(f"Updating firmware version for device {device_id} to {firmware_version}")
+            for entity in hass.data[DOMAIN]["entities"]:
+                if entity._device_id == device_id:
+                    # If the device is already processed, check for changes in full_topic
+                    new_full_topic = payload_dict.get("ft", f"%prefix%/%topic%/")
+                    if entity._full_topic != new_full_topic:
+                        _LOGGER.info(f"Detected full_topic change for device {device_id}: {entity._full_topic} -> {new_full_topic}")
 
-                        # Only set in_progress to False if the firmware version matches the target version
-                        if entity._in_process and firmware_version == entity._target_version.lstrip("v"):
-                            entity._in_process = False
-                            _LOGGER.debug(f"Setting in_progress to False for device {device_id} (target version reached)")
-                            entity.schedule_update_ha_state()  # Notify HA of state change
+                        # Update the full_topic in the entity
+                        entity._full_topic = new_full_topic
 
-                        # Update the firmware version
-                        entity._firmware_version = firmware_version
-                        entity.schedule_update_ha_state()  # Notify HA of state change
-                        break
-                return
+                        # Re-subscribe to the new LWT topic
+                        new_lwt_topic = new_full_topic.replace("%prefix%", "tele").replace("%topic%", entity._device_topic) + "LWT"
+                        await async_subscribe(hass, new_lwt_topic, lambda msg: lwt_message_received(entity, msg))
+                        entity._lwt_topic = new_lwt_topic  # Update the stored LWT topic
 
-            # Subscribe to the LWT topic to check the device's online/offline status
-            async def async_lwt_message_received(lwt_msg):
-                """Handle LWT messages."""
-                lwt_payload = lwt_msg.payload
-                _LOGGER.debug(f"LWT message received for device {device_id}: {lwt_payload}")
+                        _LOGGER.debug(f"Re-subscribed to LWT topic for device {device_id}: {new_lwt_topic}")
 
-                # Find the corresponding entity
-                for entity in hass.data[DOMAIN]["entities"]:
-                    if entity._device_id == device_id:
-                        # Only update availability if no update is in progress
-                        if not entity._in_process:
-                            if lwt_payload == "Online":
-                                entity._attr_available = True
-                                _LOGGER.debug(f"Device {device_id} is Online. Setting entity state to Available.")
-                            elif lwt_payload == "Offline":
-                                entity._attr_available = False
-                                _LOGGER.debug(f"Device {device_id} is Offline. Setting entity state to Unavailable.")
-                        else:
-                            _LOGGER.debug(f"Device {device_id} is Offline, but update is in progress. Keeping entity available.")
+                        # Notify HA of state change
                         entity.schedule_update_ha_state()
-                        break
 
-            # Subscribe to the LWT topic
-            await async_subscribe(hass, lwt_topic, async_lwt_message_received)
+                    # Update the firmware version
+                    firmware_version = payload_dict.get("sw", "unknown")
+                    _LOGGER.debug(f"Updating firmware version for device {device_id} to {firmware_version}")
+                    entity._firmware_version = firmware_version
 
-            # Mark the device as processed
-            _discovered_devices.add(device_id)
+                    # Only set in_progress to False if the firmware version matches the target version
+                    if entity._in_process and firmware_version == entity._target_version.lstrip("v"):
+                        entity._in_process = False
+                        _LOGGER.debug(f"Setting in_progress to False for device {device_id} (target version reached)")
+                    entity.schedule_update_ha_state()
+                    break
+            else:
+                # Mark the device as processed
+                _discovered_devices.add(device_id)
 
-            device_name = payload_dict.get("dn", device_id)  # Use "dn" (device name) or fallback to device_id
-            firmware_version = payload_dict.get("sw", "unknown")  # Use "sw" (firmware version) or fallback to "unknown"
-            full_topic = payload_dict.get("ft", f"%prefix%/%topic%/")  # Use "ft" (full topic) or fallback to default
+                device_name = payload_dict.get("dn", device_id)  # Use "dn" (device name) or fallback to device_id
+                firmware_version = payload_dict.get("sw", "unknown")  # Use "sw" (firmware version) or fallback to "unknown"
+                device_topic = payload_dict.get("t", device_id)  # Use "t" (topic) or fallback to device_id
+                full_topic = payload_dict.get("ft", f"%prefix%/%topic%/")  # Use "ft" (full topic) or fallback to default
 
-            _LOGGER.debug(f"Discovered Tasmota device: {device_name} (ID: {device_id}), Firmware: {firmware_version}, Topic: {device_topic}, Full Topic: {full_topic}")
+                # Construct the LWT topic dynamically
+                lwt_topic = full_topic.replace("%prefix%", "tele").replace("%topic%", device_topic) + "LWT"
+                _LOGGER.debug(f"Constructed LWT topic for device {device_id}: {lwt_topic}")
 
-            # Create an update entity for the discovered device
-            entity = TasmotaUpdateEntity(hass, device_id, device_name, firmware_version, device_topic, full_topic, hass.data[DOMAIN]["latest_version"])
-            async_add_entities([entity])
+                _LOGGER.debug(f"Discovered Tasmota device: {device_name} (ID: {device_id}), Firmware: {firmware_version}, Topic: {device_topic}, Full Topic: {full_topic}")
 
-            # Store the entity in hass.data for later updates
-            hass.data[DOMAIN]["entities"].append(entity)
+                # Create an update entity for the discovered device
+                entity = TasmotaUpdateEntity(
+                    hass,
+                    device_id,
+                    device_name,
+                    firmware_version,
+                    device_topic,
+                    full_topic,
+                    hass.data[DOMAIN]["latest_version"],  # Pass the global latest version
+                )
+                async_add_entities([entity])
+
+                # Store the entity in hass.data for later updates
+                hass.data[DOMAIN]["entities"].append(entity)
+
+                # Subscribe to the LWT topic
+                await async_subscribe(hass, lwt_topic, lambda msg: lwt_message_received(entity, msg))
 
         except json.JSONDecodeError:
             _LOGGER.error(f"Failed to parse MQTT payload as JSON: {payload}")
         except Exception as e:
             _LOGGER.error(f"Error processing MQTT message: {e}")
+
+    # Handle LWT messages
+    def lwt_message_received(entity, msg):
+        """Handle LWT messages."""
+        lwt_payload = msg.payload
+        _LOGGER.debug(f"LWT message received for device {entity._device_id}: {lwt_payload}")
+
+        if lwt_payload == "Online":
+            entity._attr_available = True
+            _LOGGER.debug(f"Device {entity._device_id} is Online. Setting entity state to Available.")
+        elif lwt_payload == "Offline":
+            # Only set the entity to unavailable if no update is in progress
+            if not entity._in_process:
+                entity._attr_available = False
+                _LOGGER.debug(f"Device {entity._device_id} is Offline. Setting entity state to Unavailable.")
+            else:
+                _LOGGER.debug(f"Device {entity._device_id} is Offline, but an update is in progress. Keeping entity available.")
+        entity.schedule_update_ha_state()
 
     # Subscribe to the MQTT Discovery topic
     await async_subscribe(hass, "tasmota/discovery/#", async_device_message_received)
@@ -122,18 +142,9 @@ class TasmotaUpdateEntity(UpdateEntity):
         self._target_version = None
         self._attr_supported_features = UpdateEntityFeature.INSTALL
         self._attr_device_class = "firmware"
-        self._attr_available = True  # Default to available during initialization
+        self._attr_available = True
 
         _LOGGER.debug(f"Initializing entity: Name={self._attr_name}, Unique ID={self._attr_unique_id}")
-
-    @property
-    def available(self):
-        """Return the availability of the entity."""
-        # Keep the entity available during the update process
-        if self._in_process:
-            _LOGGER.debug(f"Device {self._device_id} is in update process. Keeping entity available.")
-            return True
-        return self._attr_available
 
     @property
     def device_info(self) -> dict:
@@ -142,6 +153,15 @@ class TasmotaUpdateEntity(UpdateEntity):
             "identifiers": {(DOMAIN, self._device_id)},
             "connections": {("mac", self._device_id)}
         }
+
+    async def async_added_to_hass(self):
+        """Run when entity is added to Home Assistant."""
+        await super().async_added_to_hass()
+
+        # Generate the new entity ID format
+        desired_entity_id = f"update.{self._device_name.lower().replace(' ', '_')}_firmware"
+        _LOGGER.debug(f"Setting entity ID to: {desired_entity_id}")
+        self.entity_id = desired_entity_id
 
     @property
     def entity_picture(self):
@@ -217,8 +237,3 @@ class TasmotaUpdateEntity(UpdateEntity):
         if self._latest_version:
             return self._latest_version
         return self.installed_version
-
-    async def async_will_remove_from_hass(self):
-        """Clean up when the entity is removed."""
-        if DOMAIN in self.hass.data and "entities" in self.hass.data[DOMAIN]:
-            self.hass.data[DOMAIN]["entities"].remove(self)
