@@ -21,9 +21,9 @@ This is a custom Home Assistant integration that monitors firmware updates for T
    ```
    https://github.com/ahaghshenas/tasmota_update
    ```
-Select the category as **Integration**.
-5. Search for "Tasmota Update" in HACS and click **Install**.
-6. Restart Home Assistant.
+   Select the category as **Integration**.
+4. Search for "Tasmota Update" in HACS and click **Install**.
+5. Restart Home Assistant.
 
 ### Option 2: Manual Installation
 1. Clone or download this repository:
@@ -80,7 +80,7 @@ automation:
 To enable debug logging for this integration, add the following to your configuration.yaml:
 ```yaml
 logger:
-  default: info
+  default: warning
   logs:
     custom_components.tasmota_update: debug
 ```
