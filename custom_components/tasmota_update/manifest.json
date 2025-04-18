@@ -4,7 +4,7 @@
   "version": "0.7",
   "documentation": "https://github.com/ahaghshenas/tasmota_update",
   "dependencies": ["mqtt"],
-  "codeowners": ["ahmaddxb"],
+  "codeowners": ["ahaghshenas"],
   "requirements": [],
   "config_flow": true
 }
