@@ -71,6 +71,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 firmware_version = payload_dict.get("sw", "unknown")  # Use "sw" (firmware version) or fallback to "unknown"
                 device_topic = payload_dict.get("t", device_id)  # Use "t" (topic) or fallback to device_id
                 full_topic = payload_dict.get("ft", f"%prefix%/%topic%/")  # Use "ft" (full topic) or fallback to default
+                device_ip = payload_dict.get("ip", "unknown")
 
                 # Construct the LWT topic dynamically
                 lwt_topic = full_topic.replace("%prefix%", "tele").replace("%topic%", device_topic) + "LWT"
@@ -87,6 +88,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     device_topic,
                     full_topic,
                     hass.data[DOMAIN]["latest_version"],  # Pass the global latest version
+                    device_ip,
                 )
                 async_add_entities([entity])
 
@@ -128,7 +130,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class TasmotaUpdateEntity(UpdateEntity):
     """Representation of a Tasmota Update entity."""
 
-    def __init__(self, hass, device_id, device_name, firmware_version, device_topic, full_topic, latest_version=None):
+    def __init__(self, hass, device_id, device_name, firmware_version, device_topic, full_topic, latest_version=None, device_ip="unknown"):
         """Initialize the entity."""
         self.hass = hass
         self._device_id = device_id
@@ -137,6 +139,7 @@ class TasmotaUpdateEntity(UpdateEntity):
         self._device_topic = device_topic
         self._full_topic = full_topic
         self._latest_version = latest_version  # Use the globally fetched version
+        self._device_ip = device_ip
         self._attr_name = f"{device_name.replace('_', ' ')} Firmware"
         # self._attr_unique_id = f"tasmota_update_{device_id}"
         self._in_process = False
@@ -175,6 +178,16 @@ class TasmotaUpdateEntity(UpdateEntity):
         """Return the release URL for the latest firmware version."""
         if self._latest_version:
             return f"https://github.com/arendst/Tasmota/releases/tag/{self._latest_version}"
+        return None
+
+    @property
+    def release_summary(self):
+        """Return a short summary of the release (e.g., IP address)."""
+        if self._device_ip:
+            return (
+            f"🌐 http://{self._device_ip}  |  "
+            f"🖥️ http://{self._device_ip}/cs"
+        )
         return None
 
     @property
