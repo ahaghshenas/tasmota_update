@@ -66,7 +66,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 # Mark the device as processed
                 _discovered_devices.add(device_id)
 
-                device_name = payload_dict.get("dn", device_id)  # Use "dn" (device name) or fallback to device_id
+                # device_name = payload_dict.get("dn", device_id)  # Use "dn" (device name) or fallback to device_id
+                device_name = f"{payload_dict.get('dn', '')}_{device_id}"  # Use "dn" (device name) or fallback to device_id
                 firmware_version = payload_dict.get("sw", "unknown")  # Use "sw" (firmware version) or fallback to "unknown"
                 device_topic = payload_dict.get("t", device_id)  # Use "t" (topic) or fallback to device_id
                 full_topic = payload_dict.get("ft", f"%prefix%/%topic%/")  # Use "ft" (full topic) or fallback to default
@@ -136,13 +137,14 @@ class TasmotaUpdateEntity(UpdateEntity):
         self._device_topic = device_topic
         self._full_topic = full_topic
         self._latest_version = latest_version  # Use the globally fetched version
-        self._attr_name = f"{device_name} Firmware"
-        self._attr_unique_id = f"tasmota_update_{device_id}"
+        self._attr_name = f"{device_name.replace('_', ' ')} Firmware"
+        # self._attr_unique_id = f"tasmota_update_{device_id}"
         self._in_process = False
         self._target_version = None
         self._attr_supported_features = UpdateEntityFeature.INSTALL
         self._attr_device_class = "firmware"
         self._attr_available = True
+        self._attr_unique_id = f"tasmota_update_{self._device_id}" # check for uniqueness
 
         _LOGGER.debug(f"Initializing entity: Name={self._attr_name}, Unique ID={self._attr_unique_id}")
 
@@ -161,12 +163,12 @@ class TasmotaUpdateEntity(UpdateEntity):
         # Generate the new entity ID format
         desired_entity_id = f"update.{self._device_name.lower().replace(' ', '_')}_firmware"
         _LOGGER.debug(f"Setting entity ID to: {desired_entity_id}")
-        self.entity_id = desired_entity_id
+        # self.entity_id = desired_entity_id
 
     @property
     def entity_picture(self):
         """Return the entity picture URL."""
-        return "https://brands.home-assistant.io/tasmota/dark_icon.png"
+        return "https://brands.home-assistant.io/_/tasmota_update/dark_icon.png"
 
     @property
     def release_url(self):
@@ -194,6 +196,7 @@ class TasmotaUpdateEntity(UpdateEntity):
     def extra_state_attributes(self):
         """Return additional state attributes."""
         return {
+            "friendly_name": f"{self._device_name.replace('_', ' ')} Firmware",
             "in_progress": self._in_process,
             "installed_version": self.installed_version,
             "latest_version": self.latest_version,
