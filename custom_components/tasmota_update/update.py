@@ -138,12 +138,13 @@ class TasmotaUpdateEntity(UpdateEntity):
         self._full_topic = full_topic
         self._latest_version = latest_version  # Use the globally fetched version
         self._attr_name = f"{device_name.replace('_', ' ')} Firmware"
-        self._attr_unique_id = f"tasmota_update_{device_id}"
+        # self._attr_unique_id = f"tasmota_update_{device_id}"
         self._in_process = False
         self._target_version = None
         self._attr_supported_features = UpdateEntityFeature.INSTALL
         self._attr_device_class = "firmware"
         self._attr_available = True
+        self._attr_unique_id = f"tasmota_update_{self._device_id}" # check for uniqueness
 
         _LOGGER.debug(f"Initializing entity: Name={self._attr_name}, Unique ID={self._attr_unique_id}")
 
@@ -162,7 +163,7 @@ class TasmotaUpdateEntity(UpdateEntity):
         # Generate the new entity ID format
         desired_entity_id = f"update.{self._device_name.lower().replace(' ', '_')}_firmware"
         _LOGGER.debug(f"Setting entity ID to: {desired_entity_id}")
-        self.entity_id = desired_entity_id
+        # self.entity_id = desired_entity_id
 
     @property
     def entity_picture(self):
