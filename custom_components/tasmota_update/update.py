@@ -6,13 +6,11 @@ from homeassistant.components.mqtt import async_publish, async_subscribe
 from homeassistant.helpers.entity import DeviceInfo
 
 _LOGGER = logging.getLogger(__name__)
+
 DOMAIN = "tasmota_update"
 
 # Track discovered devices to avoid duplicates
 _discovered_devices = set()
-
-# Global dictionaries to track device name and friendly name counts
-_device_name_counts = {}
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up the Tasmota Update platform using MQTT Discovery."""
@@ -39,13 +37,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     new_full_topic = payload_dict.get("ft", f"%prefix%/%topic%/")
                     if entity._full_topic != new_full_topic:
                         _LOGGER.info(f"Detected full_topic change for device {device_id}: {entity._full_topic} -> {new_full_topic}")
+
                         # Update the full_topic in the entity
                         entity._full_topic = new_full_topic
+
                         # Re-subscribe to the new LWT topic
                         new_lwt_topic = new_full_topic.replace("%prefix%", "tele").replace("%topic%", entity._device_topic) + "LWT"
                         await async_subscribe(hass, new_lwt_topic, lambda msg: lwt_message_received(entity, msg))
                         entity._lwt_topic = new_lwt_topic  # Update the stored LWT topic
+
                         _LOGGER.debug(f"Re-subscribed to LWT topic for device {device_id}: {new_lwt_topic}")
+
                         # Notify HA of state change
                         entity.schedule_update_ha_state()
 
@@ -64,18 +66,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 # Mark the device as processed
                 _discovered_devices.add(device_id)
 
-                # Handle duplicate device names by appending a number
-                device_name_base = payload_dict.get("dn", device_id)  # Use "dn" or fallback to device_id
-                if device_name_base in _device_name_counts:
-                    _device_name_counts[device_name_base] += 1
-                    device_name_suffix = f"{_device_name_counts[device_name_base]}"
-                else:
-                    _device_name_counts[device_name_base] = 0
-                    device_name_suffix = ""
-
-                # Construct the final device_name
-                device_name = f"{device_name_base} {device_name_suffix}" if device_name_base else device_id
-
+                # device_name = payload_dict.get("dn", device_id)  # Use "dn" (device name) or fallback to device_id
+                device_name = f"{payload_dict.get('dn', '')}_{device_id}"  # Use "dn" (device name) or fallback to device_id
                 firmware_version = payload_dict.get("sw", "unknown")  # Use "sw" (firmware version) or fallback to "unknown"
                 device_topic = payload_dict.get("t", device_id)  # Use "t" (topic) or fallback to device_id
                 full_topic = payload_dict.get("ft", f"%prefix%/%topic%/")  # Use "ft" (full topic) or fallback to default
@@ -114,6 +106,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         """Handle LWT messages."""
         lwt_payload = msg.payload
         _LOGGER.debug(f"LWT message received for device {entity._device_id}: {lwt_payload}")
+
         if lwt_payload == "Online":
             entity._attr_available = True
             _LOGGER.debug(f"Device {entity._device_id} is Online. Setting entity state to Available.")
@@ -128,6 +121,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     # Subscribe to the MQTT Discovery topic
     await async_subscribe(hass, "tasmota/discovery/#", async_device_message_received)
+
     return True
 
 
@@ -143,13 +137,14 @@ class TasmotaUpdateEntity(UpdateEntity):
         self._device_topic = device_topic
         self._full_topic = full_topic
         self._latest_version = latest_version  # Use the globally fetched version
-        self._attr_name = f"{device_name} Firmware"
+        self._attr_name = f"{device_name.replace('_', ' ')} Firmware"
         self._attr_unique_id = f"tasmota_update_{device_id}"
         self._in_process = False
         self._target_version = None
         self._attr_supported_features = UpdateEntityFeature.INSTALL
         self._attr_device_class = "firmware"
         self._attr_available = True
+
         _LOGGER.debug(f"Initializing entity: Name={self._attr_name}, Unique ID={self._attr_unique_id}")
 
     @property
@@ -163,16 +158,11 @@ class TasmotaUpdateEntity(UpdateEntity):
     async def async_added_to_hass(self):
         """Run when entity is added to Home Assistant."""
         await super().async_added_to_hass()
+
         # Generate the new entity ID format
         desired_entity_id = f"update.{self._device_name.lower().replace(' ', '_')}_firmware"
         _LOGGER.debug(f"Setting entity ID to: {desired_entity_id}")
         self.entity_id = desired_entity_id
-
-    async def async_will_remove_from_hass(self):
-        """Cleanup on removal."""
-        if self in self.hass.data[DOMAIN]["entities"]:
-            self.hass.data[DOMAIN]["entities"].remove(self)
-            _LOGGER.debug(f"Removed entity {self._device_id} from tracked list")
 
     @property
     def entity_picture(self):
@@ -205,6 +195,7 @@ class TasmotaUpdateEntity(UpdateEntity):
     def extra_state_attributes(self):
         """Return additional state attributes."""
         return {
+            "friendly_name": f"{self._device_name.replace('_', ' ')} Firmware",
             "in_progress": self._in_process,
             "installed_version": self.installed_version,
             "latest_version": self.latest_version,
@@ -214,6 +205,7 @@ class TasmotaUpdateEntity(UpdateEntity):
         """Install the latest firmware."""
         target_version = version if version else self._latest_version
         _LOGGER.info(f"Updating Tasmota device {self._device_name} to version {target_version}")
+
         # Set the in_process flag to True to indicate an update is in progress
         self._in_process = True
         self._target_version = target_version
@@ -223,6 +215,7 @@ class TasmotaUpdateEntity(UpdateEntity):
         # Construct the MQTT topic for the upgrade command
         mqtt_topic = self._full_topic.replace("%prefix%", "cmnd").replace("%topic%", self._device_topic) + "upgrade"
         _LOGGER.debug(f"Sending MQTT command to topic: {mqtt_topic}")
+
         try:
             await async_publish(self.hass, mqtt_topic, "1")
             _LOGGER.info(f"Successfully sent MQTT command to update {self._device_name} to {target_version}")
