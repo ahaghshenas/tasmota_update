@@ -93,9 +93,27 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 async def _update_ota_urls(hass: HomeAssistant, github_repo: str) -> None:
     """Send OtaUrl command to all Tasmota devices when repo changes."""
     data = hass.data[DOMAIN]
-    ota_url = f"https://github.com/{github_repo}/releases/latest/download/tasmota.bin.gz"
 
     for entity in data["entities"]:
+        ota_firmware = getattr(entity, "_ota_firmware", None)
+        if not ota_firmware:
+            _LOGGER.warning(
+                "Skipping OtaUrl for %s — unknown firmware type (of field missing from discovery). "
+                "Set OtaUrl manually via Tasmota web UI or MQTT.",
+                entity.device_id,
+            )
+            continue
+
+        is_esp32 = "32" in ota_firmware
+
+        if github_repo == DEFAULT_GITHUB_REPO:
+            # Official Tasmota releases — platform-specific URL path
+            platform = "tasmota32" if is_esp32 else "tasmota"
+            ota_url = f"https://ota.tasmota.com/{platform}/release/{ota_firmware}.bin.gz"
+        else:
+            # Custom repo — GitHub releases raw download
+            ota_url = f"https://github.com/{github_repo}/releases/latest/download/{ota_firmware}.bin.gz"
+
         topic = (
             entity.full_topic
             .replace("%prefix%", "cmnd")
@@ -104,7 +122,7 @@ async def _update_ota_urls(hass: HomeAssistant, github_repo: str) -> None:
         )
         try:
             await async_publish(hass, topic, ota_url)
-            _LOGGER.info("Set OtaUrl for %s: %s", entity.device_id, ota_url)
+            _LOGGER.info("Set OtaUrl for %s (%s): %s", entity.device_id, ota_firmware, ota_url)
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to set OtaUrl for %s", entity.device_id, exc_info=True)
 

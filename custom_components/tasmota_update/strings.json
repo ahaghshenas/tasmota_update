@@ -14,7 +14,7 @@
     "step": {
       "init": {
         "title": "Tasmota Update Options",
-        "description": "Configure Tasmota Update integration.",
+        "description": "Configure Tasmota Update integration. Changing the GitHub repository will automatically update the OTA URL on all discovered Tasmota devices.",
         "data": {
           "cleanup_days": "Stale device cleanup period (days)",
           "github_repo": "GitHub repository (owner/repo)"

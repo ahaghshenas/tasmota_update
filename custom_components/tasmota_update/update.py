@@ -19,6 +19,18 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "tasmota_update"
 GRACE_PERIOD = timedelta(minutes=5)
+STATUS2_TIMEOUT = 5
+
+# Tasmota hardware string → firmware binary name
+_HARDWARE_TO_FIRMWARE: dict[str, str] = {
+    "ESP8266": "tasmota",
+    "ESP8266EX": "tasmota",
+    "ESP32": "tasmota32",
+    "ESP32-C3": "tasmota32c3",
+    "ESP32-C6": "tasmota32c6",
+    "ESP32-S2": "tasmota32s2",
+    "ESP32-S3": "tasmota32s3",
+}
 
 
 def _make_lwt_handler(entity: TasmotaUpdateEntity, hass: HomeAssistant):
@@ -86,6 +98,9 @@ async def async_setup_entry(
             device_id, payload.get("sw", "?"), lwt_topic,
         )
 
+        # Query exact hardware type via Status 2
+        hass.async_create_task(_query_device_hardware(hass, entity, payload))
+
     await async_subscribe(hass, "tasmota/discovery/#", _on_discovery)
 
 
@@ -98,6 +113,73 @@ def _build_lwt_topic(payload: dict, device_id: str) -> str:
     full_topic = payload.get("ft", f"%prefix%/%topic%/")
     device_topic = payload.get("t", device_id)
     return full_topic.replace("%prefix%", "tele").replace("%topic%", device_topic) + "LWT"
+
+
+async def _query_device_hardware(
+    hass: HomeAssistant,
+    entity: TasmotaUpdateEntity,
+    payload: dict,
+) -> None:
+    """Query device hardware type via MQTT Status 2 and set ota_firmware.
+
+    First checks the 'of' field from the discovery payload.
+    If missing, sends Status 2 command and parses the Hardware field
+    to determine the exact firmware binary name.
+    """
+    # First: check if discovery payload already has 'of'
+    of = payload.get("of")
+    if of:
+        entity._ota_firmware = of
+        entity.async_write_ha_state()
+        _LOGGER.debug("Got ota_firmware from discovery for %s: %s", entity.device_id, of)
+        return
+
+    # Fallback: query device via MQTT Status 2
+    full_topic = payload.get("ft", f"%prefix%/%topic%/")
+    device_topic = payload.get("t", entity.device_id)
+
+    cmnd_topic = full_topic.replace("%prefix%", "cmnd").replace("%topic%", device_topic) + "Status"
+    stat_topic = full_topic.replace("%prefix%", "stat").replace("%topic%", device_topic) + "STATUS"
+
+    result_event = asyncio.Event()
+    received_data: dict = {}
+
+    async def _on_status_response(msg) -> None:
+        try:
+            received_data.update(json.loads(msg.payload))
+        except json.JSONDecodeError:
+            pass
+        result_event.set()
+
+    unsub = await async_subscribe(hass, stat_topic, _on_status_response)
+    try:
+        await async_publish(hass, cmnd_topic, "2")
+        try:
+            await asyncio.wait_for(result_event.wait(), timeout=STATUS2_TIMEOUT)
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "Timeout querying hardware from %s — set OtaUrl manually if needed",
+                entity.device_id,
+            )
+            return
+
+        hardware = received_data.get("StatusFWR", {}).get("Hardware", "")
+        if not hardware:
+            _LOGGER.warning("No Hardware field in Status 2 response from %s", entity.device_id)
+            return
+
+        ota_firmware = _HARDWARE_TO_FIRMWARE.get(hardware)
+        if ota_firmware:
+            entity._ota_firmware = ota_firmware
+            entity.async_write_ha_state()
+            _LOGGER.info("Detected hardware for %s: %s → %s", entity.device_id, hardware, ota_firmware)
+        else:
+            _LOGGER.warning(
+                "Unknown hardware '%s' for %s — cannot determine firmware binary",
+                hardware, entity.device_id,
+            )
+    finally:
+        unsub()
 
 
 def _build_entity(
@@ -119,6 +201,7 @@ def _build_entity(
         latest_version=latest_version,
         device_ip=payload.get("ip"),
         github_repo=github_repo,
+        ota_firmware=payload.get("of"),
     )
 
 
@@ -134,6 +217,14 @@ def _update_existing_entity(entity: TasmotaUpdateEntity, payload: dict) -> None:
 
     firmware = payload.get("sw", "unknown")
     entity.firmware_version = firmware
+
+    # Update ota_firmware if discovery provides it, or re-query if still unknown
+    of = payload.get("of")
+    if of:
+        entity._ota_firmware = of
+    elif not entity._ota_firmware:
+        hass = entity.hass
+        hass.async_create_task(_query_device_hardware(hass, entity, payload))
 
     # Mark update complete if firmware changed from pre-update version
     if entity._in_progress:
@@ -168,6 +259,7 @@ class TasmotaUpdateEntity(UpdateEntity):
         latest_version: str | None,
         device_ip: str | None = None,
         github_repo: str = "arendst/Tasmota",
+        ota_firmware: str | None = None,
     ) -> None:
         self.hass = hass
         self.device_id = device_id
@@ -177,6 +269,7 @@ class TasmotaUpdateEntity(UpdateEntity):
         self._latest_version = latest_version
         self._device_ip = device_ip
         self._github_repo = github_repo
+        self._ota_firmware = ota_firmware
         self._in_progress = False
         self._target_version: str | None = None
         self._pre_update_firmware: str | None = None
@@ -262,6 +355,7 @@ class TasmotaUpdateEntity(UpdateEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs: dict[str, Any] = {
             "in_progress": self._in_progress,
+            "ota_firmware": self._ota_firmware,
         }
         if self._device_ip:
             attrs["device_ip"] = self._device_ip
