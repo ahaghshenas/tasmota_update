@@ -60,6 +60,9 @@ async def async_setup_entry(
 
         device_id = msg.topic.split("/")[-2]
 
+        # Track when this device was last seen
+        data["last_seen"][device_id] = datetime.now(timezone.utc)
+
         # --- Existing device: update firmware version or full_topic ----------
         for entity in data["entities"]:
             if entity.device_id == device_id:
