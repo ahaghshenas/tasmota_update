@@ -124,14 +124,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options update — reload the integration."""
-    old_repo = entry.options.get("github_repo", DEFAULT_GITHUB_REPO)
-    await hass.config_entries.async_reload(entry.entry_id)
-    new_entry = hass.config_entries.async_get_entry(entry.entry_id)
-    if new_entry:
-        new_repo = new_entry.options.get("github_repo", DEFAULT_GITHUB_REPO)
-        if old_repo != new_repo:
-            await _update_ota_urls(hass, new_repo)
+    """Handle options update — update OtaUrls and refresh version."""
+    new_repo = entry.options.get("github_repo", DEFAULT_GITHUB_REPO)
+
+    # Update OtaUrl on all Tasmota devices
+    await _update_ota_urls(hass, new_repo)
+
+    # Refresh latest version from the (possibly new) repo
+    await _fetch_latest_version(hass)
+
+    # Update github_repo on all live entities for correct release_url links
+    for entity in hass.data[DOMAIN]["entities"]:
+        entity._github_repo = new_repo
 
 
 async def _update_ota_urls(hass: HomeAssistant, github_repo: str) -> None:
@@ -149,14 +153,15 @@ async def _update_ota_urls(hass: HomeAssistant, github_repo: str) -> None:
             continue
 
         is_esp32 = "32" in ota_firmware
+        ext = ".bin" if is_esp32 else ".bin.gz"
 
         if github_repo == DEFAULT_GITHUB_REPO:
             # Official Tasmota releases — platform-specific URL path
             platform = "tasmota32" if is_esp32 else "tasmota"
-            ota_url = f"https://ota.tasmota.com/{platform}/release/{ota_firmware}.bin.gz"
+            ota_url = f"https://ota.tasmota.com/{platform}/release/{ota_firmware}{ext}"
         else:
             # Custom repo — GitHub releases raw download
-            ota_url = f"https://github.com/{github_repo}/releases/latest/download/{ota_firmware}.bin.gz"
+            ota_url = f"https://github.com/{github_repo}/releases/latest/download/{ota_firmware}{ext}"
 
         topic = (
             entity.full_topic

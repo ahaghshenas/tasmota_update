@@ -22,9 +22,12 @@ GRACE_PERIOD = timedelta(minutes=5)
 STATUS2_TIMEOUT = 5
 
 # Tasmota hardware string → firmware binary name
+# Keys are stripped of trailing version info (e.g. "ESP32-C3 v0.4" → "ESP32-C3")
 _HARDWARE_TO_FIRMWARE: dict[str, str] = {
     "ESP8266": "tasmota",
     "ESP8266EX": "tasmota",
+    "ESP8285": "tasmota",
+    "ESP8285H16": "tasmota",
     "ESP32": "tasmota32",
     "ESP32-C3": "tasmota32c3",
     "ESP32-C6": "tasmota32c6",
@@ -80,6 +83,9 @@ async def async_setup_entry(
         for entity in data["entities"]:
             if entity.device_id == device_id:
                 _update_existing_entity(entity, payload)
+                # Query hardware if ota_firmware is still unknown
+                if not entity._ota_firmware:
+                    hass.async_create_task(_query_device_hardware(hass, entity, payload))
                 return
 
         # --- New device -----------------------------------------------------
@@ -136,10 +142,12 @@ async def _query_device_hardware(
 
     # Fallback: query device via MQTT Status 2
     full_topic = payload.get("ft", f"%prefix%/%topic%/")
+    if not full_topic.endswith("/"):
+        full_topic += "/"
     device_topic = payload.get("t", entity.device_id)
 
     cmnd_topic = full_topic.replace("%prefix%", "cmnd").replace("%topic%", device_topic) + "Status"
-    stat_topic = full_topic.replace("%prefix%", "stat").replace("%topic%", device_topic) + "STATUS"
+    stat_topic = full_topic.replace("%prefix%", "stat").replace("%topic%", device_topic) + "STATUS2"
 
     result_event = asyncio.Event()
     received_data: dict = {}
@@ -153,6 +161,10 @@ async def _query_device_hardware(
 
     unsub = await async_subscribe(hass, stat_topic, _on_status_response)
     try:
+        _LOGGER.debug(
+            "Querying hardware from %s — cmnd: %s, stat: %s",
+            entity.device_id, cmnd_topic, stat_topic,
+        )
         await async_publish(hass, cmnd_topic, "2")
         try:
             await asyncio.wait_for(result_event.wait(), timeout=STATUS2_TIMEOUT)
@@ -168,15 +180,18 @@ async def _query_device_hardware(
             _LOGGER.warning("No Hardware field in Status 2 response from %s", entity.device_id)
             return
 
-        ota_firmware = _HARDWARE_TO_FIRMWARE.get(hardware)
+        # Strip trailing version info — e.g. "ESP32-C3 v0.4" → "ESP32-C3"
+        hw_base = hardware.split(" v")[0].strip()
+
+        ota_firmware = _HARDWARE_TO_FIRMWARE.get(hw_base)
         if ota_firmware:
             entity._ota_firmware = ota_firmware
             entity.async_write_ha_state()
-            _LOGGER.info("Detected hardware for %s: %s → %s", entity.device_id, hardware, ota_firmware)
+            _LOGGER.info("Detected hardware for %s: %s → %s", entity.device_id, hw_base, ota_firmware)
         else:
             _LOGGER.warning(
-                "Unknown hardware '%s' for %s — cannot determine firmware binary",
-                hardware, entity.device_id,
+                "Unknown hardware '%s' (base: '%s') for %s — cannot determine firmware binary",
+                hardware, hw_base, entity.device_id,
             )
     finally:
         unsub()
