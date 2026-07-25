@@ -46,6 +46,7 @@ async def async_setup_entry(
     """Set up Tasmota Update entities from MQTT Discovery."""
     data = hass.data[DOMAIN]
     discovered: set[str] = data["discovered_devices"]
+    github_repo = entry.options.get("github_repo", "arendst/Tasmota")
 
     async def _on_discovery(msg) -> None:
         """Handle incoming Tasmota MQTT Discovery messages."""
@@ -74,7 +75,7 @@ async def async_setup_entry(
             return
         discovered.add(device_id)
 
-        entity = _build_entity(hass, device_id, payload, data["latest_version"])
+        entity = _build_entity(hass, device_id, payload, data["latest_version"], github_repo)
         async_add_entities([entity])
         data["entities"].append(entity)
 
@@ -104,6 +105,7 @@ def _build_entity(
     device_id: str,
     payload: dict,
     latest_version: str | None,
+    github_repo: str = "arendst/Tasmota",
 ) -> TasmotaUpdateEntity:
     """Create a TasmotaUpdateEntity from a discovery payload."""
     device_name = payload.get("dn", "") or device_id
@@ -116,6 +118,7 @@ def _build_entity(
         full_topic=payload.get("ft", f"%prefix%/%topic%/"),
         latest_version=latest_version,
         device_ip=payload.get("ip"),
+        github_repo=github_repo,
     )
 
 
@@ -164,6 +167,7 @@ class TasmotaUpdateEntity(UpdateEntity):
         full_topic: str,
         latest_version: str | None,
         device_ip: str | None = None,
+        github_repo: str = "arendst/Tasmota",
     ) -> None:
         self.hass = hass
         self.device_id = device_id
@@ -172,6 +176,7 @@ class TasmotaUpdateEntity(UpdateEntity):
         self.full_topic = full_topic
         self._latest_version = latest_version
         self._device_ip = device_ip
+        self._github_repo = github_repo
         self._in_progress = False
         self._target_version: str | None = None
         self._pre_update_firmware: str | None = None
@@ -250,7 +255,7 @@ class TasmotaUpdateEntity(UpdateEntity):
     @property
     def release_url(self) -> str | None:
         if self._latest_version:
-            return f"https://github.com/arendst/Tasmota/releases/tag/v{self._latest_version}"
+            return f"https://github.com/{self._github_repo}/releases/tag/v{self._latest_version}"
         return None
 
     @property

@@ -1,0 +1,25 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Tasmota Update",
+        "description": "Set up Tasmota Update integration."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one instance is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tasmota Update Options",
+        "description": "Configure Tasmota Update integration.",
+        "data": {
+          "cleanup_days": "Stale device cleanup period (days)",
+          "github_repo": "GitHub repository (owner/repo)"
+        }
+      }
+    }
+  }
+}

@@ -14,10 +14,22 @@ from homeassistant.helpers.event import async_track_time_interval
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "tasmota_update"
-GITHUB_URL = "https://api.github.com/repos/arendst/Tasmota/releases/latest"
+DEFAULT_CLEANUP_DAYS = 7
+DEFAULT_GITHUB_REPO = "arendst/Tasmota"
 CHECK_INTERVAL = timedelta(hours=1)
-CLEANUP_INTERVAL = timedelta(hours=1)
-DEVICE_MAX_AGE = timedelta(days=7)
+
+
+def _get_options(entry: ConfigEntry) -> dict:
+    """Get options with defaults."""
+    return {
+        "cleanup_days": entry.options.get("cleanup_days", DEFAULT_CLEANUP_DAYS),
+        "github_repo": entry.options.get("github_repo", DEFAULT_GITHUB_REPO),
+    }
+
+
+def _build_github_url(repo: str) -> str:
+    """Build GitHub API URL from repo string."""
+    return f"https://api.github.com/repos/{repo}/releases/latest"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -49,9 +61,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Schedule periodic stale device cleanup
     cancel_cleanup = async_track_time_interval(
-        hass, lambda _now: _cleanup_stale_devices(hass), CLEANUP_INTERVAL
+        hass, lambda _now: _cleanup_stale_devices(hass), timedelta(hours=1)
     )
     entry.async_on_unload(cancel_cleanup)
+
+    # Listen for options changes
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     # Forward the setup to the update platform
     await hass.config_entries.async_forward_entry_setups(entry, ["update"])
@@ -61,6 +76,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, ["update"])
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options update — reload the integration."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 def _init_last_seen(hass: HomeAssistant) -> None:
@@ -78,7 +98,11 @@ def _init_last_seen(hass: HomeAssistant) -> None:
 
 
 def _cleanup_stale_devices(hass: HomeAssistant) -> None:
-    """Remove Tasmota devices that haven't been seen for DEVICE_MAX_AGE and have no entities."""
+    """Remove Tasmota devices that haven't been seen for the configured period and have no entities."""
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    options = _get_options(entry)
+    max_age = timedelta(days=options["cleanup_days"])
+
     data = hass.data[DOMAIN]
     last_seen = data.get("last_seen", {})
     device_registry = async_get_device_registry(hass)
@@ -94,7 +118,7 @@ def _cleanup_stale_devices(hass: HomeAssistant) -> None:
                 seen = last_seen.get(device_mac)
                 if seen is None:
                     continue
-                if now - seen > DEVICE_MAX_AGE:
+                if now - seen > max_age:
                     # Only remove if device has no entities at all
                     has_entities = any(
                         e.device_id == device.id
@@ -117,7 +141,11 @@ def _cleanup_stale_devices(hass: HomeAssistant) -> None:
 
 async def _fetch_latest_version(hass: HomeAssistant) -> None:
     """Fetch the latest Tasmota firmware version from GitHub."""
-    latest_version = await async_get_latest_version(hass)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    options = _get_options(entry)
+    github_url = _build_github_url(options["github_repo"])
+
+    latest_version = await async_get_latest_version(hass, github_url)
     if not latest_version:
         return
 
@@ -129,11 +157,11 @@ async def _fetch_latest_version(hass: HomeAssistant) -> None:
         entity.set_latest_version(latest_version)
 
 
-async def async_get_latest_version(hass: HomeAssistant) -> str | None:
+async def async_get_latest_version(hass: HomeAssistant, github_url: str) -> str | None:
     """Fetch the latest firmware version tag from GitHub, stripping the leading 'v'."""
     session = async_get_clientsession(hass)
     try:
-        resp = await session.get(GITHUB_URL, timeout=10)
+        resp = await session.get(github_url, timeout=10)
         if resp.status == 200:
             data = await resp.json()
             tag = data.get("tag_name", "")
