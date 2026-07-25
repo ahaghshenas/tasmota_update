@@ -11,6 +11,7 @@ This is a custom Home Assistant integration that monitors firmware updates for T
 - **Full Topic Recording**: Records the full MQTT topic for each device to ensure firmware updates are sent to the correct topic.
 - **GitHub Integration**: Fetches the latest firmware version from the official [Tasmota GitHub repository](https://github.com/arendst/Tasmota).
 - **HACS Support**: Easily install and manage this integration using [HACS (Home Assistant Community Store)](https://hacs.xyz).
+- **Reliable Updates**: 5-minute availability grace period prevents entity flickering during OTA updates and reboots.
 
 ## Installation
 
