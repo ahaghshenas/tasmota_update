@@ -1,7 +1,7 @@
 {
   "domain": "tasmota_update",
   "name": "Tasmota Update",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "documentation": "https://github.com/ahaghshenas/tasmota_update",
   "issue_tracker": "https://github.com/ahaghshenas/tasmota_update/issues",
   "dependencies": ["mqtt"],

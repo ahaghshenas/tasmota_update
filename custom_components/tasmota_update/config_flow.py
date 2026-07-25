@@ -58,12 +58,8 @@ class TasmotaUpdateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return TasmotaUpdateOptionsFlow(config_entry)
 
 
-class TasmotaUpdateOptionsFlow(config_entries.OptionsFlow):
+class TasmotaUpdateOptionsFlow(config_entries.OptionsFlowWithConfigEntry):
     """Handle options flow for Tasmota Update."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""
