@@ -38,6 +38,47 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+def _readopt_orphaned_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Re-link orphaned entity registry entries to this config entry.
+
+    When a config entry is deleted and re-created, the old entity registry
+    entries become orphaned (config_entry_id=null). HA's async_add_entities
+    may fail to re-link them automatically. This function explicitly
+    re-associates them and removes stale entries.
+    """
+    entity_registry = async_get_entity_registry(hass)
+    device_registry = async_get_device_registry(hass)
+    readopted = 0
+    removed = 0
+
+    for entity_id in list(entity_registry.entities):
+        reg_entry = entity_registry.entities.get(entity_id)
+        if reg_entry is None or reg_entry.platform != DOMAIN:
+            continue
+
+        # Remove orphaned entries for devices that no longer exist
+        if reg_entry.device_id is not None:
+            device = device_registry.devices.get(reg_entry.device_id)
+            if device is None:
+                entity_registry.async_remove_entity(reg_entry.entity_id)
+                _LOGGER.info("Removed orphaned entity %s (device no longer exists)", entity_id)
+                removed += 1
+                continue
+
+        # Re-link orphaned entities to this config entry
+        if reg_entry.config_entry_id != entry.entry_id:
+            entity_registry.async_update_entity(
+                entity_id,
+                config_entry_id=entry.entry_id,
+            )
+            readopted += 1
+
+    if readopted:
+        _LOGGER.info("Re-linked %d orphaned entity(ies) to config entry", readopted)
+    if removed:
+        _LOGGER.info("Removed %d orphaned entity(ies) with missing devices", removed)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Tasmota Update from a config entry."""
     if DOMAIN not in hass.data:
@@ -68,6 +109,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Listen for options changes
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
+    # Re-adopt orphaned entities from a previous config entry
+    _readopt_orphaned_entities(hass, entry)
 
     # Forward the setup to the update platform
     await hass.config_entries.async_forward_entry_setups(entry, ["update"])
