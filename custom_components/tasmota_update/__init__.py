@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from homeassistant.components.mqtt import async_publish
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -80,7 +81,32 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update — reload the integration."""
+    old_repo = entry.options.get("github_repo", DEFAULT_GITHUB_REPO)
     await hass.config_entries.async_reload(entry.entry_id)
+    new_entry = hass.config_entries.async_get_entry(entry.entry_id)
+    if new_entry:
+        new_repo = new_entry.options.get("github_repo", DEFAULT_GITHUB_REPO)
+        if old_repo != new_repo:
+            await _update_ota_urls(hass, new_repo)
+
+
+async def _update_ota_urls(hass: HomeAssistant, github_repo: str) -> None:
+    """Send OtaUrl command to all Tasmota devices when repo changes."""
+    data = hass.data[DOMAIN]
+    ota_url = f"https://github.com/{github_repo}/releases/latest/download/tasmota.bin.gz"
+
+    for entity in data["entities"]:
+        topic = (
+            entity.full_topic
+            .replace("%prefix%", "cmnd")
+            .replace("%topic%", entity._device_topic)
+            + "OtaUrl"
+        )
+        try:
+            await async_publish(hass, topic, ota_url)
+            _LOGGER.info("Set OtaUrl for %s: %s", entity.device_id, ota_url)
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Failed to set OtaUrl for %s", entity.device_id, exc_info=True)
 
 
 def _init_last_seen(hass: HomeAssistant) -> None:
