@@ -103,8 +103,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(cancel_interval)
 
     # Schedule periodic stale device cleanup
-    async def _cleanup_cb(_now):
-        await _cleanup_stale_devices(hass)
+    def _cleanup_cb(_now):
+        _cleanup_stale_devices(hass)
 
     cancel_cleanup = async_track_time_interval(hass, _cleanup_cb, timedelta(hours=1))
     entry.async_on_unload(cancel_cleanup)
