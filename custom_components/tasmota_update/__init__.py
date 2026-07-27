@@ -96,15 +96,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _fetch_latest_version(hass)
 
     # Schedule periodic version checks
-    cancel_interval = async_track_time_interval(
-        hass, lambda _now: _fetch_latest_version(hass), CHECK_INTERVAL
-    )
+    async def _fetch_version_cb(_now):
+        await _fetch_latest_version(hass)
+
+    cancel_interval = async_track_time_interval(hass, _fetch_version_cb, CHECK_INTERVAL)
     entry.async_on_unload(cancel_interval)
 
     # Schedule periodic stale device cleanup
-    cancel_cleanup = async_track_time_interval(
-        hass, lambda _now: _cleanup_stale_devices(hass), timedelta(hours=1)
-    )
+    async def _cleanup_cb(_now):
+        await _cleanup_stale_devices(hass)
+
+    cancel_cleanup = async_track_time_interval(hass, _cleanup_cb, timedelta(hours=1))
     entry.async_on_unload(cancel_cleanup)
 
     # Listen for options changes
