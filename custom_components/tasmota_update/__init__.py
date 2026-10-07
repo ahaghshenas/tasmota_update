@@ -6,11 +6,13 @@ from datetime import datetime, timedelta, timezone
 
 from homeassistant.components.mqtt import async_publish
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import async_get as async_get_device_registry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
+
+from .update import _find_tasmota_device, _sync_own_device_sw_version
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,6 +20,10 @@ DOMAIN = "tasmota_update"
 DEFAULT_CLEANUP_DAYS = 7
 DEFAULT_GITHUB_REPO = "arendst/Tasmota"
 CHECK_INTERVAL = timedelta(hours=1)
+# Seconds after setup before entities are moved onto the Tasmota-owned device
+# entries and the duplicate devices are removed (MQTT discovery is processed
+# within the first seconds after subscribing).
+DEVICE_MIGRATION_DELAY = 60
 
 
 def _get_options(entry: ConfigEntry) -> dict:
@@ -79,6 +85,68 @@ def _readopt_orphaned_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
         _LOGGER.info("Removed %d orphaned entity(ies) with missing devices", removed)
 
 
+def _migrate_device_links(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Move update entities onto Tasmota-owned devices and drop duplicates.
+
+    HA Core 2026.8 gives each integration its own device entry per physical
+    device, which left every Tasmota device represented twice: the Tasmota
+    integration's device and a duplicate created by this integration.
+
+    This moves each update entity registry entry to Tasmota's device entry
+    (entities created at startup already link via Entity.device_entry; this
+    covers disabled entities that are never added and entities created in the
+    same boot before Tasmota registered its device), removes the now-empty
+    duplicate device entries, and syncs sw_version on any device entry this
+    integration still owns.
+    """
+    device_registry = async_get_device_registry(hass)
+    entity_registry = async_get_entity_registry(hass)
+
+    # 1) Move update entities to the Tasmota-owned device for their MAC
+    moved = 0
+    for reg_entry in list(entity_registry.entities.values()):
+        if reg_entry.platform != DOMAIN or not reg_entry.unique_id:
+            continue
+        mac = reg_entry.unique_id.removeprefix(f"{DOMAIN}_")
+        if mac == reg_entry.unique_id:
+            continue
+        tasmota_device = _find_tasmota_device(hass, mac)
+        if tasmota_device is None or tasmota_device.id == reg_entry.device_id:
+            continue
+        entity_registry.async_update_entity(
+            reg_entry.entity_id, device_id=tasmota_device.id
+        )
+        moved += 1
+        _LOGGER.debug(
+            "Moved %s to the Tasmota device entry for %s",
+            reg_entry.entity_id, mac,
+        )
+
+    # 2) Remove our empty duplicate device entries. Only entities linked to a
+    # device owned by this config entry are removed together with it, so this
+    # must run after the moves above.
+    removed = 0
+    for device in list(device_registry.devices):
+        if device.config_entry_id != entry.entry_id:
+            continue
+        if any(e.device_id == device.id for e in entity_registry.entities.values()):
+            continue
+        device_registry.async_remove_device(device.id)
+        removed += 1
+        _LOGGER.debug("Removed empty duplicate device %s", device.id)
+
+    # 3) Sync firmware version on device entries this integration still owns
+    # (created by the device_info fallback when Tasmota had no device).
+    for entity in hass.data[DOMAIN].get("entities", []):
+        _sync_own_device_sw_version(hass, entity.device_id, entity.firmware_version)
+
+    if moved or removed:
+        _LOGGER.info(
+            "Device link migration: moved %d entit(y/ies) to Tasmota device(s), "
+            "removed %d duplicate device(s)", moved, removed,
+        )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Tasmota Update from a config entry."""
     if DOMAIN not in hass.data:
@@ -103,7 +171,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(cancel_interval)
 
     # Schedule periodic stale device cleanup
+    @callback
     def _cleanup_cb(_now):
+        # Plain (non-async, non-@callback) functions passed to
+        # async_track_time_interval run in an executor thread, which is not
+        # allowed for registry mutations.
         _cleanup_stale_devices(hass)
 
     cancel_cleanup = async_track_time_interval(hass, _cleanup_cb, timedelta(hours=1))
@@ -114,6 +186,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Re-adopt orphaned entities from a previous config entry
     _readopt_orphaned_entities(hass, entry)
+
+    # Once MQTT discovery has been processed, move the update entities onto
+    # the Tasmota-owned device entries and delete the duplicate devices the
+    # HA 2026.8 single-config-entry split left behind. The @callback marker
+    # is required: an unmarked function would be classified as an executor
+    # job and run in a thread, where registry mutations are not allowed.
+    @callback
+    def _run_migration(_now: datetime) -> None:
+        _migrate_device_links(hass, entry)
+
+    cancel_migration = async_call_later(
+        hass,
+        DEVICE_MIGRATION_DELAY,
+        _run_migration,
+    )
+    entry.async_on_unload(cancel_migration)
 
     # Forward the setup to the update platform
     await hass.config_entries.async_forward_entry_setups(entry, ["update"])

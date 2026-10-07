@@ -12,7 +12,11 @@ from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import (
+    DeviceEntry,
+    DeviceInfo,
+    async_get as async_get_device_registry,
+)
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 _LOGGER = logging.getLogger(__name__)
@@ -119,6 +123,51 @@ def _build_lwt_topic(payload: dict, device_id: str) -> str:
     full_topic = payload.get("ft", f"%prefix%/%topic%/")
     device_topic = payload.get("t", device_id)
     return full_topic.replace("%prefix%", "tele").replace("%topic%", device_topic) + "LWT"
+
+
+def _find_tasmota_device(hass: HomeAssistant, mac: str) -> DeviceEntry | None:
+    """Return the device entry the core Tasmota integration owns for this MAC.
+
+    Since HA Core 2026.8 a device belongs to a single config entry, so a
+    physical device supported by several integrations is represented by one
+    device entry per integration. Linking our entity to Tasmota's device entry
+    (via Entity.device_entry) keeps a single device page per physical device.
+
+    Returns None when Tasmota has no device for this MAC (integration not set
+    up or removed, or a brand-new device discovered before Tasmota registered
+    it) — the entity then falls back to a device entry of its own.
+    """
+    device_registry = async_get_device_registry(hass)
+    for tasmota_entry in hass.config_entries.async_entries("tasmota"):
+        device = device_registry.async_get_device_by_connection(
+            ("mac", mac), tasmota_entry.entry_id
+        )
+        if device is not None:
+            return device
+    return None
+
+
+def _sync_own_device_sw_version(
+    hass: HomeAssistant, mac: str, version: str | None
+) -> None:
+    """Sync sw_version on this integration's own (fallback) device entry.
+
+    Device entries owned by the core Tasmota integration are left alone —
+    Tasmota keeps their firmware version up to date itself.
+    """
+    if not version or version == "unknown":
+        return
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if not entries:
+        return
+    device_registry = async_get_device_registry(hass)
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, mac), entries[0].entry_id
+    )
+    if device is None or device.sw_version == version:
+        return
+    device_registry.async_update_device(device.id, sw_version=version)
+    _LOGGER.debug("Synced sw_version %s for own device %s", version, mac)
 
 
 async def _query_device_hardware(
@@ -233,6 +282,11 @@ def _update_existing_entity(entity: TasmotaUpdateEntity, payload: dict) -> None:
     firmware = payload.get("sw", "unknown")
     entity.firmware_version = firmware
 
+    # Keep this integration's own device entry's firmware version in sync
+    # (only applies to fallback devices; Tasmota's own devices are managed
+    # by the Tasmota integration).
+    _sync_own_device_sw_version(entity.hass, entity.device_id, firmware)
+
     # Update ota_firmware if discovery provides it, or re-query if still unknown
     of = payload.get("of")
     if of:
@@ -291,18 +345,35 @@ class TasmotaUpdateEntity(UpdateEntity):
         self._grace_until: datetime | None = None
         self._monitor_task: asyncio.Task | None = None
 
+        # Link the entity to the device entry owned by the core Tasmota
+        # integration (read by entity_platform when device_info is None).
+        # Falls back to None → device_info below creates our own device.
+        self.device_entry = _find_tasmota_device(hass, device_id)
+
         # Entity identity — with has_entity_name=True, HA prepends device name
         self._attr_name = "Firmware"
         self._attr_unique_id = f"tasmota_update_{device_id}"
         self._attr_available = True
 
     @property
-    def device_info(self) -> DeviceInfo:
-        """Return device registry info — links to existing Tasmota device."""
-        return DeviceInfo(
+    def device_info(self) -> DeviceInfo | None:
+        """Return device registry info for this integration's own device entry.
+
+        Returns None when the entity is already linked to the core Tasmota
+        integration's device (Entity.device_entry set in __init__) — a
+        non-None device_info would override that link with a device owned by
+        this integration, recreating the duplicate device entry. This is only
+        the fallback for devices Tasmota has no device entry for.
+        """
+        if self.device_entry is not None:
+            return None
+        info = DeviceInfo(
             identifiers={(DOMAIN, self.device_id)},
             connections={("mac", self.device_id)},
         )
+        if self.firmware_version and self.firmware_version != "unknown":
+            info["sw_version"] = self.firmware_version
+        return info
 
     # -- grace period --------------------------------------------------------
 
