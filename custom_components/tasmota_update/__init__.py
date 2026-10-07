@@ -58,7 +58,7 @@ def _readopt_orphaned_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
         # Remove orphaned entries for devices that no longer exist
         if reg_entry.device_id is not None:
-            device = device_registry.devices.get(reg_entry.device_id)
+            device = device_registry.async_get(reg_entry.device_id)
             if device is None:
                 entity_registry.async_remove_entity(reg_entry.entity_id)
                 _LOGGER.info("Removed orphaned entity %s (device no longer exists)", entity_id)
@@ -184,7 +184,7 @@ def _init_last_seen(hass: HomeAssistant) -> None:
     device_registry = async_get_device_registry(hass)
     now = datetime.now(timezone.utc)
 
-    for device in device_registry.devices.values():
+    for device in device_registry.devices:
         for identifier in device.identifiers:
             if identifier[0] == DOMAIN:
                 device_mac = identifier[1]
@@ -206,7 +206,7 @@ def _cleanup_stale_devices(hass: HomeAssistant) -> None:
     now = datetime.now(timezone.utc)
     stale_devices: list[str] = []
 
-    for device in device_registry.devices.values():
+    for device in device_registry.devices:
         for identifier in device.identifiers:
             if identifier[0] == DOMAIN:
                 device_mac = identifier[1]
