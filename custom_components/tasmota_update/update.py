@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -344,6 +345,7 @@ class TasmotaUpdateEntity(UpdateEntity):
         self._pre_update_firmware: str | None = None
         self._grace_until: datetime | None = None
         self._monitor_task: asyncio.Task | None = None
+        self._upgrade_unsub: Callable[[], None] | None = None
 
         # Link the entity to the device entry owned by the core Tasmota
         # integration (read by entity_platform when device_info is None).
@@ -405,6 +407,9 @@ class TasmotaUpdateEntity(UpdateEntity):
             )
             self._in_progress = False
             self._target_version = None
+            if self._upgrade_unsub is not None:
+                self._upgrade_unsub()
+                self._upgrade_unsub = None
             self.async_write_ha_state()
 
     def _cleanup_update(self) -> None:
@@ -412,6 +417,9 @@ class TasmotaUpdateEntity(UpdateEntity):
         if self._monitor_task and not self._monitor_task.done():
             self._monitor_task.cancel()
             self._monitor_task = None
+        if self._upgrade_unsub is not None:
+            self._upgrade_unsub()
+            self._upgrade_unsub = None
 
     # -- version properties --------------------------------------------------
 
@@ -453,6 +461,39 @@ class TasmotaUpdateEntity(UpdateEntity):
 
     # -- install action ------------------------------------------------------
 
+    async def _subscribe_upgrade_result(self) -> None:
+        """Watch stat/<topic>/UPGRADE for the device's own upgrade verdict.
+
+        Tasmota publishes {"Upgrade": "Failed <reason>"} there when the OTA
+        download fails. Without this the entity would sit on in_progress
+        until the grace period expires even though the device already gave up.
+        """
+        stat_topic = (
+            self.full_topic
+            .replace("%prefix%", "stat")
+            .replace("%topic%", self._device_topic)
+            + "UPGRADE"
+        )
+
+        async def _on_upgrade_result(msg) -> None:
+            try:
+                payload = json.loads(msg.payload)
+            except json.JSONDecodeError:
+                return
+            result = payload.get("Upgrade")
+            if not isinstance(result, str) or not result.startswith("Failed"):
+                return
+            if not self._in_progress:
+                return
+            _LOGGER.warning("Update failed on %s: %s", self.device_id, result)
+            self._in_progress = False
+            self._target_version = None
+            self._cleanup_update()
+            self.async_write_ha_state()
+
+        self._upgrade_unsub = await async_subscribe(self.hass, stat_topic, _on_upgrade_result)
+        _LOGGER.debug("Watching upgrade results for %s on %s", self.device_id, stat_topic)
+
     async def async_install(self, version: str | None, backup: bool, **kwargs) -> None:
         """Send MQTT upgrade command to the device."""
         target = version or self._latest_version
@@ -460,8 +501,13 @@ class TasmotaUpdateEntity(UpdateEntity):
             _LOGGER.error("No target version for %s", self.device_id)
             return
 
-        # Clean up any prior update attempt
+        # Clean up any prior update attempt (cancels the monitor and the
+        # previous upgrade-result subscription)
         self._cleanup_update()
+
+        # Subscribe to the device's upgrade verdict BEFORE flipping
+        # in_progress, so a failure can never leave it stuck.
+        await self._subscribe_upgrade_result()
 
         self._in_progress = True
         self._target_version = target

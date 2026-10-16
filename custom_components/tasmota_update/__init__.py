@@ -246,11 +246,23 @@ async def _update_ota_urls(hass: HomeAssistant, github_repo: str) -> None:
         ext = ".bin" if is_esp32 else ".bin.gz"
 
         if github_repo == DEFAULT_GITHUB_REPO:
-            # Official Tasmota releases — platform-specific URL path
+            # Official Tasmota releases — platform-specific URL path.
+            # ESP8266 cannot do OTA over HTTPS (insufficient RAM for the TLS
+            # client; Tasmota maintainers explicitly do not support it), and
+            # Tasmota's own default OtaUrl is http:// — pushing https:// to an
+            # ESP8266 makes the download stall until the read timeout.
+            # ESP32 supports HTTPS OTA, so keep https there.
+            scheme = "https" if is_esp32 else "http"
             platform = "tasmota32" if is_esp32 else "tasmota"
-            ota_url = f"https://ota.tasmota.com/{platform}/release/{ota_firmware}{ext}"
+            ota_url = f"{scheme}://ota.tasmota.com/{platform}/release/{ota_firmware}{ext}"
         else:
-            # Custom repo — GitHub releases raw download
+            # Custom repo — GitHub releases raw download (GitHub is HTTPS-only)
+            if not is_esp32:
+                _LOGGER.warning(
+                    "Custom repo OtaUrl for %s: GitHub only serves HTTPS, which "
+                    "ESP8266 devices cannot use for OTA — updates will fail",
+                    entity.device_id,
+                )
             ota_url = f"https://github.com/{github_repo}/releases/latest/download/{ota_firmware}{ext}"
 
         topic = (
