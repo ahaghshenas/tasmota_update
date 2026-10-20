@@ -236,8 +236,8 @@ async def _update_ota_urls(hass: HomeAssistant, github_repo: str) -> None:
         ota_firmware = getattr(entity, "_ota_firmware", None)
         if not ota_firmware:
             _LOGGER.warning(
-                "Skipping OtaUrl for %s — unknown firmware type (of field missing from discovery). "
-                "Set OtaUrl manually via Tasmota web UI or MQTT.",
+                "Skipping OtaUrl for %s — firmware type not detected yet. "
+                "Set OtaUrl manually via the Tasmota web UI or MQTT if needed.",
                 entity.device_id,
             )
             continue

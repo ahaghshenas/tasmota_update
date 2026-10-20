@@ -19,12 +19,17 @@ from homeassistant.helpers.device_registry import (
     async_get as async_get_device_registry,
 )
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "tasmota_update"
 GRACE_PERIOD = timedelta(minutes=5)
 STATUS2_TIMEOUT = 5
+STATUS2_ATTEMPTS = 3
+# Delay before attempt 2 and 3. A restart can leave the MQTT broker backlogged
+# for longer than the 5 second reply window, so the first attempt may be lost.
+STATUS2_BACKOFF = (2, 5)
 
 # Tasmota hardware string → firmware binary name
 # Keys are stripped of trailing version info (e.g. "ESP32-C3 v0.4" → "ESP32-C3")
@@ -65,6 +70,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up Tasmota Update entities from MQTT Discovery."""
     data = hass.data[DOMAIN]
+
+    # A config entry reload keeps hass.data, but the platform's entities were
+    # removed during unload. Reset the per-setup tracking, otherwise the
+    # retained discovery messages hit the "already discovered" short-circuit
+    # and no entities are recreated after a reload.
+    data["entities"] = []
+    data["discovered_devices"] = set()
+
     discovered: set[str] = data["discovered_devices"]
     github_repo = entry.options.get("github_repo", "arendst/Tasmota")
 
@@ -199,52 +212,76 @@ async def _query_device_hardware(
     cmnd_topic = full_topic.replace("%prefix%", "cmnd").replace("%topic%", device_topic) + "Status"
     stat_topic = full_topic.replace("%prefix%", "stat").replace("%topic%", device_topic) + "STATUS2"
 
-    result_event = asyncio.Event()
     received_data: dict = {}
+    got_reply = False
 
-    async def _on_status_response(msg) -> None:
-        try:
-            received_data.update(json.loads(msg.payload))
-        except json.JSONDecodeError:
-            pass
-        result_event.set()
+    for attempt in range(1, STATUS2_ATTEMPTS + 1):
+        result_event = asyncio.Event()
 
-    unsub = await async_subscribe(hass, stat_topic, _on_status_response)
-    try:
-        _LOGGER.debug(
-            "Querying hardware from %s — cmnd: %s, stat: %s",
-            entity.device_id, cmnd_topic, stat_topic,
-        )
-        await async_publish(hass, cmnd_topic, "2")
+        async def _on_status_response(msg, _event=result_event) -> None:
+            try:
+                received_data.update(json.loads(msg.payload))
+            except json.JSONDecodeError:
+                pass
+            _event.set()
+
+        unsub = await async_subscribe(hass, stat_topic, _on_status_response)
         try:
-            await asyncio.wait_for(result_event.wait(), timeout=STATUS2_TIMEOUT)
-        except asyncio.TimeoutError:
-            _LOGGER.warning(
-                "Timeout querying hardware from %s — set OtaUrl manually if needed",
-                entity.device_id,
+            _LOGGER.debug(
+                "Querying hardware from %s (attempt %d/%d) — cmnd: %s, stat: %s",
+                entity.device_id, attempt, STATUS2_ATTEMPTS, cmnd_topic, stat_topic,
             )
-            return
+            await async_publish(hass, cmnd_topic, "2")
+            try:
+                await asyncio.wait_for(result_event.wait(), timeout=STATUS2_TIMEOUT)
+                got_reply = True
+            except asyncio.TimeoutError:
+                got_reply = False
+        finally:
+            unsub()
 
-        hardware = received_data.get("StatusFWR", {}).get("Hardware", "")
-        if not hardware:
-            _LOGGER.warning("No Hardware field in Status 2 response from %s", entity.device_id)
-            return
+        if got_reply:
+            break
+        if attempt < STATUS2_ATTEMPTS:
+            delay = STATUS2_BACKOFF[min(attempt - 1, len(STATUS2_BACKOFF) - 1)]
+            _LOGGER.debug(
+                "No Status 2 reply from %s (attempt %d/%d) — retrying in %ss",
+                entity.device_id, attempt, STATUS2_ATTEMPTS, delay,
+            )
+            await asyncio.sleep(delay)
 
-        # Strip trailing version info — e.g. "ESP32-C3 v0.4" → "ESP32-C3"
-        hw_base = hardware.split(" v")[0].strip()
-
-        ota_firmware = _HARDWARE_TO_FIRMWARE.get(hw_base)
-        if ota_firmware:
-            entity._ota_firmware = ota_firmware
-            entity.async_write_ha_state()
-            _LOGGER.info("Detected hardware for %s: %s → %s", entity.device_id, hw_base, ota_firmware)
+    if not got_reply:
+        if entity._ota_firmware:
+            # A known type is good enough; the query was only a refresh.
+            _LOGGER.debug(
+                "Could not refresh hardware for %s after %d attempts — keeping %s",
+                entity.device_id, STATUS2_ATTEMPTS, entity._ota_firmware,
+            )
         else:
             _LOGGER.warning(
-                "Unknown hardware '%s' (base: '%s') for %s — cannot determine firmware binary",
-                hardware, hw_base, entity.device_id,
+                "No hardware response from %s after %d attempts — set OtaUrl manually if needed",
+                entity.device_id, STATUS2_ATTEMPTS,
             )
-    finally:
-        unsub()
+        return
+
+    hardware = received_data.get("StatusFWR", {}).get("Hardware", "")
+    if not hardware:
+        _LOGGER.warning("No Hardware field in Status 2 response from %s", entity.device_id)
+        return
+
+    # Strip trailing version info — e.g. "ESP32-C3 v0.4" → "ESP32-C3"
+    hw_base = hardware.split(" v")[0].strip()
+
+    ota_firmware = _HARDWARE_TO_FIRMWARE.get(hw_base)
+    if ota_firmware:
+        entity._ota_firmware = ota_firmware
+        entity.async_write_ha_state()
+        _LOGGER.info("Detected hardware for %s: %s → %s", entity.device_id, hw_base, ota_firmware)
+    else:
+        _LOGGER.warning(
+            "Unknown hardware '%s' (base: '%s') for %s — cannot determine firmware binary",
+            hardware, hw_base, entity.device_id,
+        )
 
 
 def _build_entity(
@@ -310,7 +347,7 @@ def _update_existing_entity(entity: TasmotaUpdateEntity, payload: dict) -> None:
 # Entity
 # ---------------------------------------------------------------------------
 
-class TasmotaUpdateEntity(UpdateEntity):
+class TasmotaUpdateEntity(UpdateEntity, RestoreEntity):
     """Representation of a Tasmota firmware update."""
 
     _attr_device_class = "firmware"
@@ -356,6 +393,23 @@ class TasmotaUpdateEntity(UpdateEntity):
         self._attr_name = "Firmware"
         self._attr_unique_id = f"tasmota_update_{device_id}"
         self._attr_available = True
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last known chip type before the hardware query runs.
+
+        The type is normally learned with a Status 2 query, but right after a
+        restart the broker can still be backlogged. Restoring the previous
+        value keeps OtaUrl updates working through a slow start; the discovery
+        query still refreshes it when it succeeds.
+        """
+        await super().async_added_to_hass()
+        if self._ota_firmware:
+            return
+        last_state = await self.async_get_last_state()
+        restored = last_state.attributes.get("ota_firmware") if last_state else None
+        if isinstance(restored, str) and restored:
+            self._ota_firmware = restored
+            _LOGGER.debug("Restored ota_firmware for %s: %s", self.device_id, restored)
 
     @property
     def device_info(self) -> DeviceInfo | None:
